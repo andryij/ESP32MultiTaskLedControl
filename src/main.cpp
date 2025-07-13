@@ -2,9 +2,14 @@
 
 #define LED_GREEN_PIN GPIO_NUM_4
 static const BaseType_t app_cpu0 = 0;
-static const BaseType_t app_cpu1 = 1;
 
-static int blink_rate = 500;
+
+
+//static int blink_rate = 500; // static variable to interface between tasks, may be unsafe
+
+// queue definition
+static const uint8_t queue_len = 5;
+static QueueHandle_t queue;
 
 //task handles
 TaskHandle_t handle_led_blink = NULL;
@@ -14,7 +19,13 @@ TaskHandle_t handle_update_rate = NULL;
 void task_led_blink(void *params){
   Serial.print("task_led_blink running on core ");
   Serial.println(xPortGetCoreID());
+  int rec_from_queue;
+  static int blink_rate = 1000;   // make sure it is initialized to not crash vTaskDelay before data is read from queue!
   while(1){
+    if (xQueueReceive(queue, (void *)&rec_from_queue, 0) == pdTRUE)
+    {
+      blink_rate = rec_from_queue;
+    }
     gpio_set_level(LED_GREEN_PIN, 1);
     vTaskDelay(blink_rate / portTICK_PERIOD_MS);
     gpio_set_level(LED_GREEN_PIN, 0);
@@ -31,11 +42,20 @@ void task_update_rate(void *params){
     if (Serial.available() > 0)
     {
       numread = Serial.parseInt();
-      if ((numread > 499) && (numread < 5001))
+      if ((numread > 499) && (numread < 2001))
       {
-        blink_rate = numread;
-        Serial.print(" New rate =");
-        Serial.println(numread);        
+        // try to put item in queue for 10 ticks 
+        if (xQueueSend(queue, &numread, 10) != pdTRUE)
+        {
+          //fail if queue is full
+          Serial.println("Queue full");
+        }
+        else
+        {
+          // report updated rate (but not yet really, updated, that's up to blink task)
+          Serial.print("New rate = ");
+          Serial.println(numread);
+        }   
         Serial.println("Enter blink rate in ms (500 .. 5000)");
       }
       else if (numread != 0 )
@@ -58,7 +78,8 @@ void setup() {
   Serial.println();
   Serial.println("Multi task led control");
   Serial.println("Enter blink rate in ms (500 .. 5000)");
-
+  // create queue
+  queue = xQueueCreate(queue_len, sizeof(int));
 
   // config tasks
   xTaskCreatePinnedToCore(
@@ -68,7 +89,7 @@ void setup() {
       NULL,
       2,
       &handle_led_blink,
-      app_cpu1
+      app_cpu0
   );
 
   xTaskCreatePinnedToCore(
